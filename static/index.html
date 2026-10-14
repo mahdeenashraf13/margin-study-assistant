@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Margin: quizzes from your notes</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=Public+Sans:wght@400;600&display=swap">
+<style>
+:root{--bg:#fbfbfd;--card:#fff;--ink:#1d1b3a;--mute:#5f5d7a;--line:#e1e0ee;--accent:#4338ca;--hl:#ffe66d;--good:#1f7a4d;--bad:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#14132a;--card:#1d1b3a;--ink:#ecebfa;--mute:#a4a2c4;--line:#322f5c;--accent:#a5a0ff;--hl:#6b5d00;--good:#6fd09b;--bad:#f0766b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Public Sans",system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:32px 16px 80px}
+h1{font:600 2.4rem/1.1 Newsreader,Georgia,serif;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:14px}
+input,textarea,select,button{font:inherit;color:inherit}
+input,textarea{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);margin:4px 0 10px}
+textarea{min-height:150px;resize:vertical}
+label{font-size:.85rem;color:var(--mute);display:block}
+button{padding:8px 14px;border:0;border-radius:6px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer}
+button:disabled{opacity:.6;cursor:wait}
+button.ghost{background:none;color:var(--mute);padding:4px 8px;font-weight:400}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.q{font:600 1.2rem/1.35 Newsreader,Georgia,serif;margin:0 0 10px}
+.choice{padding:6px 10px;border-radius:6px;margin:3px 0;cursor:pointer;border:1px solid transparent}
+.choice:hover{border-color:var(--line)}
+.choice.correct{background:var(--hl);font-weight:600}
+.choice.wrong{border-color:var(--bad);color:var(--bad)}
+.exp{color:var(--mute);font-size:.9rem;margin-top:8px}
+.badge{font-size:.8rem;padding:2px 8px;border-radius:99px;border:1px solid currentColor;white-space:nowrap}
+.badge.ok{color:var(--good)}.badge.no{color:var(--bad)}.badge.na{color:var(--mute)}
+.head{display:flex;justify-content:space-between;gap:8px;align-items:start}
+.actions{margin-top:10px;display:flex;gap:4px;flex-wrap:wrap}
+.row{display:flex;gap:10px}.row>*{flex:1}
+.msg{min-height:1.4em;color:var(--bad)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>Margin</h1>
+<p class="sub">Paste notes or upload a PDF. Get a quiz where every question is checked against your source.</p>
+
+<form class="card" id="make" onsubmit="makeDeck(event)">
+  <div class="row"><label>Deck title<input id="title" placeholder="Biology ch. 4"></label>
+  <label>Or upload a PDF / .txt<input id="file" type="file" accept=".pdf,.txt,.md"></label></div>
+  <label>Notes<textarea id="text" placeholder="Paste at least a few paragraphs"></textarea></label>
+  <button id="go">Make quiz</button> <span class="msg" id="msg" role="status"></span>
+</form>
+
+<div class="card hidden" id="decks"><label>Your decks <select id="deckSel" onchange="openDeck(this.value)"></select></label></div>
+<div id="score" class="sub"></div>
+<div id="cards"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let cards = [], answered = {};
+
+async function api(path, opts = {}) {
+  if (opts.body && !(opts.body instanceof FormData)) { opts.headers = {"Content-Type": "application/json"}; opts.body = JSON.stringify(opts.body); }
+  const r = await fetch("/api" + path, opts);
+  const data = r.status === 204 ? null : await r.json();
+  if (!r.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+async function makeDeck(e) {
+  e.preventDefault(); $("go").disabled = true; $("msg").textContent = "";
+  $("msg").style.color = "var(--mute)"; $("msg").textContent = "Reading your notes, writing questions and checking each one. This takes up to a minute.";
+  try {
+    const f = $("file").files[0], fd = new FormData();
+    let opts;
+    if (f) { fd.append("file", f); opts = {method: "POST", body: fd}; }
+    else opts = {method: "POST", body: {title: $("title").value, text: $("text").value}};
+    const {id} = await api("/decks", opts);
+    $("msg").textContent = ""; await loadDecks(id);
+  } catch (err) { $("msg").style.color = "var(--bad)"; $("msg").textContent = err.message; }
+  $("go").disabled = false;
+}
+async function loadDecks(select) {
+  const decks = await api("/decks");
+  $("decks").classList.toggle("hidden", !decks.length);
+  $("deckSel").innerHTML = decks.map(d => `<option value="${d.id}">${esc(d.title)} (${d.cards} questions)</option>`).join("");
+  if (decks.length) { $("deckSel").value = select || decks[0].id; openDeck($("deckSel").value); }
+}
+async function openDeck(id) { cards = (await api("/decks/" + id)).cards; answered = {}; render(); }
+
+function badge(c) {
+  if (c.verified === true) return '<span class="badge ok" title="The source passage answers this question">Checked against source</span>';
+  if (c.verified === false) return `<span class="badge no" title="${esc(c.reason)}">Needs review: ${esc(c.reason || "failed check")}</span>`;
+  return `<span class="badge na">${esc(c.reason || "Not checked")}</span>`;
+}
+function render() {
+  const n = Object.keys(answered).length, right = Object.values(answered).filter(a => a.ok).length;
+  $("score").textContent = cards.length ? `${right} correct of ${n} answered, ${cards.length} questions` : "";
+  $("cards").innerHTML = cards.length ? cards.map((c, i) => `
+    <article class="card">
+      <div class="head"><p class="q">${esc(c.question)}</p>${badge(c)}</div>
+      ${c.choices.map((t, j) => {
+        const a = answered[c.id]; const cls = a === undefined ? "" : j === c.answer_index ? "correct" : (a.pick === j ? "wrong" : "");
+        return `<div class="choice ${cls}" role="button" tabindex="0" onclick="pick(${c.id},${j})" onkeydown="if(event.key==='Enter')pick(${c.id},${j})">${esc(t)}</div>`; }).join("")}
+      ${answered[c.id] !== undefined && c.explanation ? `<div class="exp">${esc(c.explanation)}</div>` : ""}
+      <div class="actions"><button class="ghost" onclick="edit(${i})">Edit</button>
+      <button class="ghost" onclick="regen(${c.id}, this)">Regenerate</button>
+      <button class="ghost" onclick="del(${c.id})">Delete</button></div>
+    </article>`).join("") : "";
+}
+function pick(id, j) { if (answered[id] !== undefined) return; const c = cards.find(x => x.id === id); answered[id] = {pick: j, ok: j === c.answer_index}; render(); }
+function edit(i) {
+  const c = cards[i];
+  $("cards").children[i].innerHTML = `<form onsubmit="saveEdit(event,${c.id})">
+    <label>Question<input name="q" value="${esc(c.question)}" required></label>
+    ${c.choices.map((t, j) => `<label>Choice ${j + 1}<div class="row"><input name="c${j}" value="${esc(t)}" required>
+      <label style="flex:0 0 90px;margin-top:10px"><input type="radio" name="ans" value="${j}" ${j === c.answer_index ? "checked" : ""} style="width:auto"> correct</label></div></label>`).join("")}
+    <label>Explanation<input name="e" value="${esc(c.explanation || "")}"></label>
+    <button>Save changes</button> <button type="button" class="ghost" onclick="render()">Cancel</button></form>`;
+}
+async function saveEdit(e, id) {
+  e.preventDefault(); const f = new FormData(e.target);
+  try {
+    await api("/cards/" + id, {method: "PATCH", body: {question: f.get("q"), choices: [0, 1, 2, 3].map(j => f.get("c" + j)), answer_index: +f.get("ans"), explanation: f.get("e")}});
+    await openDeck($("deckSel").value);
+  } catch (err) { alert(err.message); }
+}
+async function regen(id, btn) {
+  btn.disabled = true; btn.textContent = "Regenerating";
+  try { const n = await api(`/cards/${id}/regenerate`, {method: "POST"}); cards[cards.findIndex(c => c.id === id)] = n; delete answered[id]; }
+  catch (err) { alert(err.message); }
+  render();
+}
+async function del(id) { await api("/cards/" + id, {method: "DELETE"}); cards = cards.filter(c => c.id !== id); delete answered[id]; render(); }
+loadDecks();
+</script>
+</body>
+</html>
